@@ -1,0 +1,9 @@
+total 28
+drwxrwxr-x  3 avalon-rego avalon-rego 4096 Mar 24 16:14 .
+drwxr-x--- 38 avalon-rego avalon-rego 4096 Mar 24 16:01 ..
+drwxrwxr-x  6 avalon-rego avalon-rego 4096 Mar 24 14:48 .git
+-rw-rw-r--  1 avalon-rego avalon-rego  143 Mar 24 14:42 Idea.txt
+-rw-rw-r--  1 avalon-rego avalon-rego  185 Mar 24 16:10 manifest.json
+-rw-rw-r--  1 avalon-rego avalon-rego    4 Mar 24 14:47 README
+-rw-rw-r--  1 avalon-rego avalon-rego   77 Mar 24 16:07 script.js
+-rw-rw-r--  1 avalon-rego avalon-rego    0 Mar 24 16:14 temp.txt
