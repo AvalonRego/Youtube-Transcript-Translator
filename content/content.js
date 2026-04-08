@@ -7,16 +7,14 @@ function onYouTubeNavigate() {
   browser.runtime.sendMessage({ type: "GET_STATE" })
     .then(({ enabled }) => {
       console.log("Video page detected. Translator enabled:", enabled);
+      fetchTranscript().then(result => console.log("Transcript result:", result));
     });
 }
 
-// Initial load
 onYouTubeNavigate();
 
-// YouTube SPA navigation
 window.addEventListener("yt-navigate-finish", onYouTubeNavigate);
 
-// Message listener — top level
 browser.runtime.onMessage.addListener((message) => {
   if (message.type === "TOGGLE") {
     console.log("Translator toggled:", message.enabled);

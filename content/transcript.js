@@ -1,54 +1,62 @@
 // content/transcript.js
 
-async function fetchTranscript() {
-  const videoId = new URLSearchParams(window.location.search).get("v");
-  if (!videoId) return { error: "No video ID found" };
+let _transcriptData = null;
 
-  // Step 1: Fetch the page HTML and extract ytInitialPlayerResponse
-  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-  const html = await response.text();
-
-  const match = html.match(/ytInitialPlayerResponse\s*=\s*({.+?})\s*;/);
-  if (!match) return { error: "Could not find player response" };
-
-  let playerResponse;
-  try {
-    playerResponse = JSON.parse(match[1]);
-  } catch (e) {
-    return { error: "Could not parse player response" };
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  if (event.data?.type === 'YT_TRANSCRIPT_DATA') {
+    _transcriptData = event.data.data;
+    console.log("Transcript data received");
   }
+});
 
-  // Step 2: Find caption tracks
-  const tracks = playerResponse?.captions
-    ?.playerCaptionsTracklistRenderer
-    ?.captionTracks;
+function waitForTranscriptData(timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    if (_transcriptData) return resolve(_transcriptData);
 
-  if (!tracks || tracks.length === 0) return { error: "No captions available" };
-
-  // Step 3: Find German track
-  const deTrack = tracks.find(t => t.languageCode === "de");
-  if (!deTrack) return { error: "No German captions found" };
-
-  // Step 4: Fetch the transcript XML
-  const transcriptResponse = await fetch(deTrack.baseUrl);
-  const xml = await transcriptResponse.text();
-
-  // Step 5: Parse XML
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(xml, "text/xml");
-  const textNodes = Array.from(doc.querySelectorAll("text"));
-
-  if (textNodes.length === 0) return { error: "Transcript is empty" };
-
-  const segments = textNodes.map(node => {
-    const start = parseFloat(node.getAttribute("start"));
-    const minutes = Math.floor(start / 60).toString().padStart(2, "0");
-    const seconds = Math.floor(start % 60).toString().padStart(2, "0");
-    return {
-      timestamp: `${minutes}:${seconds}`,
-      text: node.textContent.replace(/&#39;/g, "'").replace(/&amp;/g, "&").trim()
+    const handler = (event) => {
+      if (event.source !== window) return;
+      if (event.data?.type === 'YT_TRANSCRIPT_DATA') {
+        window.removeEventListener('message', handler);
+        clearTimeout(timer);
+        resolve(event.data.data);
+      }
     };
-  });
 
-  return { segments };
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      reject(new Error("Timed out waiting for transcript data"));
+    }, timeoutMs);
+
+    window.addEventListener('message', handler);
+  });
+}
+
+async function fetchTranscript() {
+  try {
+    const data = await waitForTranscriptData();
+
+    const contents = data?.content
+      ?.engagementPanelSectionListRenderer
+      ?.content
+      ?.sectionListRenderer
+      ?.contents?.[0]
+      ?.itemSectionRenderer
+      ?.contents;
+
+    if (!contents || contents.length === 0) return { error: "No transcript contents found" };
+
+    const segments = contents.map(item => {
+      const vm = item?.macroMarkersPanelItemViewModel?.item?.timelineItemViewModel;
+      const text = vm?.contentItems?.[0]?.transcriptSegmentViewModel?.simpleText;
+      const timestamp = vm?.timestamp;
+      return text && timestamp ? { timestamp, text } : null;
+    }).filter(Boolean);
+
+    if (segments.length === 0) return { error: "No segments parsed" };
+
+    return { segments };
+  } catch (e) {
+    return { error: e.message };
+  }
 }

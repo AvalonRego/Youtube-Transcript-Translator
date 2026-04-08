@@ -17,10 +17,17 @@
     "default_popup": "popup/popup.html",
     "default_title": "YouTube Translator"
   },
+  "web_accessible_resources": ["content/injected.js"],
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["content/content.js"]
+      "js": ["content/injector.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content/transcript.js", "content/content.js"],
+      "run_at": "document_idle"
     }
   ]
 }
