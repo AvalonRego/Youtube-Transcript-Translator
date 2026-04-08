@@ -1,0 +1,106 @@
+# Implementation Plan
+
+## Project Structure
+```
+extension/
+├── manifest.json          # MV2, permissions, registers all scripts
+├── background.js          # Manages storage state
+├── popup/
+│   ├── popup.html
+│   └── popup.js           # Toggle button, syncs with storage
+└── content/
+    ├── content.js         # Main orchestrator
+    ├── transcript.js      # Fetches & parses YT transcript
+    ├── translate.js       # LibreTranslate API calls
+    └── sidebar.js         # Injects & renders sidebar DOM
+```
+
+---
+
+## 1. `manifest.json`
+- Manifest V2
+- Permissions: `storage`, `activeTab`, `http://localhost:5000/*`
+- `content_scripts` matches `*://*.youtube.com/*`
+- Registers `background.js` as background script
+- Registers `popup.html` as browser action
+
+---
+
+## 2. `background.js`
+- Initialises `browser.storage.local` with `{ enabled: false, targetLang: "en", sourceLang: "de" }`
+- Listens for messages from popup and content script to toggle state
+- `targetLang`/`sourceLang` stored here as the hook for future user-selectable language
+
+---
+
+## 3. `popup.html` / `popup.js`
+- Single toggle button showing current state (On/Off)
+- Reads state from `browser.storage.local`
+- On click: flips `enabled`, writes back to storage, sends message to active tab's content script
+
+---
+
+## 4. `content.js`
+- On page load and YouTube SPA navigation (listen for `yt-navigate-finish` event), checks current URL is a `/watch` page
+- Reads `enabled` from `browser.storage.local`
+- Listens for messages from popup to toggle on/off at runtime
+- Orchestrates: calls `transcript.js` → `translate.js` → `sidebar.js`
+- On disable: removes sidebar from DOM
+
+---
+
+## 5. `transcript.js`
+- **Step 1:** Extract `videoId` from URL
+- **Step 2:** Fetch `https://www.youtube.com/watch?v={videoId}` and extract the `ytInitialPlayerResponse` JSON blob embedded in the page HTML (regex parse)
+- **Step 3:** From that blob, navigate to `captions.playerCaptionsTracklistRenderer.captionTracks`
+- **Step 4:** Find a track where `languageCode === "de"`
+- **Step 5:** If none found, return error state for sidebar to display
+- **Step 6:** Fetch the `baseUrl` of that track (returns XML)
+- **Step 7:** Parse XML — each `<text start="..." dur="...">` element becomes `{ timestamp, text }`
+- **Step 8:** Return array of `{ timestamp: "MM:SS", text: string }`
+
+**Known risk:** `ytInitialPlayerResponse` is unofficial and YouTube can change its structure without notice.
+
+---
+
+## 6. `translate.js`
+- Accepts array of `{ timestamp, text }`
+- For each segment, POST to `http://localhost:5000/translate` with body:
+  ```json
+  { "q": "...", "source": "de", "target": "en", "format": "text" }
+  ```
+- Returns array of `{ timestamp, original, translated }`
+- Requests are sequential (not parallel) to avoid overwhelming local LibreTranslate
+- If a segment fails, `translated` is set to `"[translation error]"`
+- Hook: `source`/`target` values come from `browser.storage.local`, not hardcoded
+
+---
+
+## 7. `sidebar.js`
+- Injects a `div#yt-translator-sidebar` into the YouTube page DOM
+- Positions it to the right of the video player using CSS (fixed or flex depending on YT layout)
+- Renders each segment pair as:
+  ```
+  [MM:SS] 🇩🇪  <original text>
+  [MM:SS] 🇬🇧  <translated text>
+  ```
+- Includes a close/toggle button at the top of the sidebar
+- Inject button on the page (near the video player controls area) that toggles `enabled` in storage and shows/hides sidebar
+- Sidebar is scrollable, styled minimally to not clash with YT's dark/light theme
+
+---
+
+## Key Constraints & Gotchas
+1. **YouTube is a SPA** — `yt-navigate-finish` must be used, not just `DOMContentLoaded`
+2. **`ytInitialPlayerResponse`** is unofficial — most fragile part of the whole extension
+3. **LibreTranslate must have the `de` language pack installed** — verify with `GET /languages` on your local instance
+4. **CSP on YouTube** — injected styles must be inline or via extension stylesheet, no external resources
+5. **MV2 `browser.*` API** — do not use `chrome.*` anywhere; use the `browser.*` WebExtensions API throughout
+6. **Translation is slow** — sidebar should show a loading state while segments are being translated, rendering pairs progressively as each comes in rather than waiting for all
+
+---
+
+## Out of Scope (Future)
+- User-selectable source/target language (storage keys already in place)
+- Handling multiple transcript languages on one video
+- Caching translations to avoid re-fetching on revisit
