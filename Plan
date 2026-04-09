@@ -1,106 +1,135 @@
-# Implementation Plan
+# Implementation Plan (Updated)
 
 ## Project Structure
 ```
 extension/
-├── manifest.json          # MV2, permissions, registers all scripts
-├── background.js          # Manages storage state
+├── manifest.json
+├── background.js
 ├── popup/
 │   ├── popup.html
-│   └── popup.js           # Toggle button, syncs with storage
+│   └── popup.js
 └── content/
-    ├── content.js         # Main orchestrator
-    ├── transcript.js      # Fetches & parses YT transcript
-    ├── translate.js       # LibreTranslate API calls
-    └── sidebar.js         # Injects & renders sidebar DOM
+    ├── content.js
+    ├── transcript.js
+    ├── injector.js
+    ├── injected.js
+    ├── translate.js      ← not yet implemented
+    └── sidebar.js        ← not yet implemented
 ```
 
 ---
 
 ## 1. `manifest.json`
 - Manifest V2
-- Permissions: `storage`, `activeTab`, `http://localhost:5000/*`
-- `content_scripts` matches `*://*.youtube.com/*`
-- Registers `background.js` as background script
-- Registers `popup.html` as browser action
+- Permissions: `storage`, `activeTab`, `tabs`, `http://localhost:5000/*`
+  - `tabs` added to support per-tab state management in `background.js`
+- Two content script entries:
+  - `injector.js` runs at `document_start` to inject `injected.js` before YouTube's scripts run
+  - `transcript.js` + `content.js` run at `document_idle`
+- `web_accessible_resources: ["content/injected.js"]` — required so `injector.js` can load `injected.js` as a `<script src>` tag, bypassing YouTube's CSP which blocks inline scripts
 
 ---
 
 ## 2. `background.js`
-- Initialises `browser.storage.local` with `{ enabled: false, targetLang: "en", sourceLang: "de" }`
-- Listens for messages from popup and content script to toggle state
-- `targetLang`/`sourceLang` stored here as the hook for future user-selectable language
+- Initialises `browser.storage.local` with `{ sourceLang: "de", targetLang: "en" }`
+  - `enabled` removed from storage — replaced with per-tab in-memory state (see below)
+- Manages per-tab `enabled` state in a `tabStates` object in memory
+  - Reason: a single global `enabled` flag affected all tabs simultaneously, which was undesirable
+  - Tab state is discarded when the tab is closed via `browser.tabs.onRemoved`
+- Responds to `GET_STATE` and `SET_STATE` messages using `sender.tab.id` to identify the tab
 
 ---
 
 ## 3. `popup.html` / `popup.js`
 - Single toggle button showing current state (On/Off)
-- Reads state from `browser.storage.local`
-- On click: flips `enabled`, writes back to storage, sends message to active tab's content script
+- Reads and writes per-tab state via `GET_STATE`/`SET_STATE` messages to `background.js`
+- On toggle: sends `TOGGLE` message to the active tab's content script so it can react immediately without a page reload
+- Uses `browser.tabs.query` to identify the current tab
 
 ---
 
-## 4. `content.js`
-- On page load and YouTube SPA navigation (listen for `yt-navigate-finish` event), checks current URL is a `/watch` page
-- Reads `enabled` from `browser.storage.local`
-- Listens for messages from popup to toggle on/off at runtime
-- Orchestrates: calls `transcript.js` → `translate.js` → `sidebar.js`
-- On disable: removes sidebar from DOM
+## 4. `injector.js` ← new file
+- Runs at `document_start`
+- Creates a `<script src="...injected.js">` element pointing to the extension file
+- This approach is necessary because YouTube's CSP (`require-trusted-types-for 'script'`) blocks setting `script.textContent` directly
+- Removes the script tag after it loads
 
 ---
 
-## 5. `transcript.js`
-- **Step 1:** Extract `videoId` from URL
-- **Step 2:** Fetch `https://www.youtube.com/watch?v={videoId}` and extract the `ytInitialPlayerResponse` JSON blob embedded in the page HTML (regex parse)
-- **Step 3:** From that blob, navigate to `captions.playerCaptionsTracklistRenderer.captionTracks`
-- **Step 4:** Find a track where `languageCode === "de"`
-- **Step 5:** If none found, return error state for sidebar to display
-- **Step 6:** Fetch the `baseUrl` of that track (returns XML)
-- **Step 7:** Parse XML — each `<text start="..." dur="...">` element becomes `{ timestamp, text }`
-- **Step 8:** Return array of `{ timestamp: "MM:SS", text: string }`
-
-**Known risk:** `ytInitialPlayerResponse` is unofficial and YouTube can change its structure without notice.
+## 5. `injected.js` ← new file
+- Runs in page context (not content script context) — this is critical because content scripts have an isolated `window` and cannot access `ytInitialPlayerResponse` or intercept `window.fetch`
+- Maintains a `currentTracks` variable updated by listening to `yt-page-data-fetched`
+  - Reason: `ytInitialPlayerResponse` does not update on SPA navigation, so it cannot be used to detect the current video's language. `yt-page-data-fetched` fires on every navigation with fresh `playerResponse` data
+- Wraps `window.fetch` to intercept calls to `get_panel` — this is the endpoint YouTube's own transcript panel uses
+  - Reason: YouTube's `timedtext` API returns empty responses even with valid URLs and credentials. The `get_panel` endpoint is what actually works
+- On interception: posts a `YT_TRANSCRIPT_DATA` message to the content script via `window.postMessage` with the data and current language tracks
+- Also listens for `yt-navigate-finish` and posts `YT_NAVIGATED` to signal the content script to reset stale data
 
 ---
 
-## 6. `translate.js`
-- Accepts array of `{ timestamp, text }`
-- For each segment, POST to `http://localhost:5000/translate` with body:
+## 6. `transcript.js`
+- Listens for `window.postMessage` events from `injected.js`
+- On `YT_NAVIGATED`: resets `_transcriptData` and `_currentVideoId` to prevent stale data being used on the next video
+- On `YT_TRANSCRIPT_DATA`: checks `event.data.tracks` for `"de"` before storing
+  - Reason: `ytInitialPlayerResponse` is not accessible in content script context, so language info is passed from `injected.js` via the message payload
+  - If no German track: logs and ignores the data
+- `fetchTranscript()` is now synchronous — it reads from `_transcriptData` immediately rather than polling or using a timeout
+  - Reason: transcript data is only set after the user opens the transcript panel, so by the time `fetchTranscript()` is called the data is already available
+- Parses segments from `transcriptSegmentViewModel.simpleText` and `timestamp` fields
+- Returns `{ segments: [{ timestamp, text }] }` or `{ error: string }`
+- `resetTranscriptData()` exported for `content.js` to call on navigation
+
+---
+
+## 7. `content.js`
+- On `yt-navigate-finish` and initial load: checks for `/watch` page, calls `resetTranscriptData()`
+- Listens for `YT_TRANSCRIPT_DATA` messages — this is the trigger for transcript processing, not page navigation
+  - Reason: we don't know when the user will open the transcript panel, so we react to the data arriving rather than polling
+- Calls `fetchTranscript()` with a 50ms delay after receiving transcript data to ensure `transcript.js` message handler runs first
+- Listens for `TOGGLE` messages from popup to update state at runtime
+
+---
+
+## 8. `translate.js` ← not yet implemented
+- Will accept array of `{ timestamp, text }`
+- For each segment, POST to `http://localhost:5000/translate`:
   ```json
   { "q": "...", "source": "de", "target": "en", "format": "text" }
   ```
 - Returns array of `{ timestamp, original, translated }`
-- Requests are sequential (not parallel) to avoid overwhelming local LibreTranslate
-- If a segment fails, `translated` is set to `"[translation error]"`
-- Hook: `source`/`target` values come from `browser.storage.local`, not hardcoded
+- Requests sequential to avoid overwhelming local LibreTranslate
+- Failed segments set `translated` to `"[translation error]"`
+- `source`/`target` read from `browser.storage.local` as hook for future user-selectable language
 
 ---
 
-## 7. `sidebar.js`
-- Injects a `div#yt-translator-sidebar` into the YouTube page DOM
-- Positions it to the right of the video player using CSS (fixed or flex depending on YT layout)
-- Renders each segment pair as:
+## 9. `sidebar.js` ← not yet implemented
+- Injects `div#yt-translator-sidebar` into YouTube page DOM
+- Single scrollable column, each segment pair rendered as:
   ```
   [MM:SS] 🇩🇪  <original text>
   [MM:SS] 🇬🇧  <translated text>
   ```
-- Includes a close/toggle button at the top of the sidebar
-- Inject button on the page (near the video player controls area) that toggles `enabled` in storage and shows/hides sidebar
-- Sidebar is scrollable, styled minimally to not clash with YT's dark/light theme
+- Toggle button injected on page + popup both control visibility
+- Styled to not clash with YouTube dark/light theme
+- Renders progressively as translations arrive rather than waiting for all segments
 
 ---
 
 ## Key Constraints & Gotchas
 1. **YouTube is a SPA** — `yt-navigate-finish` must be used, not just `DOMContentLoaded`
-2. **`ytInitialPlayerResponse`** is unofficial — most fragile part of the whole extension
-3. **LibreTranslate must have the `de` language pack installed** — verify with `GET /languages` on your local instance
-4. **CSP on YouTube** — injected styles must be inline or via extension stylesheet, no external resources
-5. **MV2 `browser.*` API** — do not use `chrome.*` anywhere; use the `browser.*` WebExtensions API throughout
-6. **Translation is slow** — sidebar should show a loading state while segments are being translated, rendering pairs progressively as each comes in rather than waiting for all
+2. **Content script `window` is isolated** — `ytInitialPlayerResponse`, `window.fetch`, and YouTube events are only accessible from `injected.js` which runs in page context
+3. **YouTube CSP** — inline scripts are blocked; `injected.js` must be loaded via `<script src>` from `web_accessible_resources`
+4. **`ytInitialPlayerResponse` does not update on SPA navigation** — `yt-page-data-fetched` must be used instead for reliable language detection
+5. **`timedtext` API returns empty responses** — `get_panel` interception is the only reliable transcript source found
+6. **LibreTranslate must have `de` language pack installed** — verify at `http://localhost:5000/languages`
+7. **MV2 `browser.*` API** — do not use `chrome.*` anywhere
+8. **Translation is slow** — sidebar must show loading state and render progressively
 
 ---
 
 ## Out of Scope (Future)
-- User-selectable source/target language (storage keys already in place)
+- User-selectable source/target language (storage keys already in place in `background.js`)
 - Handling multiple transcript languages on one video
 - Caching translations to avoid re-fetching on revisit
+- Auto-opening the transcript panel (currently requires manual user action)
