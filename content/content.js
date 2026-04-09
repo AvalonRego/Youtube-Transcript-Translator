@@ -17,7 +17,17 @@ window.addEventListener('message', (event) => {
   if (event.data?.type !== 'YT_TRANSCRIPT_DATA') return;
 
   setTimeout(() => {
-    fetchTranscript().then(result => console.log("Transcript result:", result));
+    fetchTranscript().then(result => {
+      if (result.error) {
+        console.log("Transcript error:", result.error);
+        return;
+      }
+      console.log("Transcript result:", result.segments.length, "segments");
+      translateSegments(result.segments).then(translated => {
+      console.log("Translation result:", translated);
+      injectTranslations(translated);
+    });
+    });
   }, 50);
 });
 

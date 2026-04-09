@@ -26,7 +26,7 @@
     },
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["content/transcript.js", "content/content.js"],
+      "js": ["content/transcript.js", "content/translate.js", "content/sidebar.js", "content/content.js"],
       "run_at": "document_idle"
     }
   ]
