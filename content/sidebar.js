@@ -57,13 +57,14 @@ function injectPageButton() {
   `;
 
   btn.addEventListener('click', () => {
-    showTranscriptBtn.click();
-    browser.runtime.sendMessage({ type: "GET_STATE" }).then(({ enabled }) => {
-      if (!enabled) {
-        browser.runtime.sendMessage({ type: "SET_STATE_CURRENT", enabled: true });
-      }
-    });
+  const transcriptBtn = document.querySelector('button[aria-label="Show transcript"]');
+  if (transcriptBtn) transcriptBtn.click();
+  browser.runtime.sendMessage({ type: "GET_STATE" }).then(({ enabled }) => {
+    if (!enabled) {
+      browser.runtime.sendMessage({ type: "SET_STATE_CURRENT", enabled: true });
+    }
   });
+});
 
   parent.insertAdjacentElement('afterend', btn);
   console.log("Translator button injected");
