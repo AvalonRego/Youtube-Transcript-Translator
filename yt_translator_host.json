@@ -1,0 +1,7 @@
+{
+  "name": "yt_translator_host",
+  "description": "LibreTranslate controller for YouTube Translator",
+  "path": "/home/avalon-rego/TTE/yt_translator_host_wrapper.sh",
+  "type": "stdio",
+  "allowed_extensions": ["yt-translator@local"]
+}

@@ -4,14 +4,21 @@
   "version": "0.1",
   "description": "Detects YouTube videos and shows a translated transcript sidebar",
   "permissions": [
-    "storage",
-    "activeTab",
-    "tabs",
-    "http://localhost:5000/*"
+  "storage",
+  "activeTab",
+  "tabs",
+  "nativeMessaging",
+  "http://localhost:5000/*"
   ],
+  "browser_specific_settings": {
+  "gecko": {
+    "id": "yt-translator@local",
+    "strict_min_version": "57.0"
+  }
+  },
   "background": {
     "scripts": ["background.js"],
-    "persistent": false
+    "persistent": true
   },
   "browser_action": {
     "default_popup": "popup/popup.html",

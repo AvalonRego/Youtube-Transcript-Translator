@@ -1,8 +1,7 @@
 // content/translate.js
 
-async function translateSegments(segments) {
+async function translateSegments(segments, onSegmentTranslated) {
   const { sourceLang, targetLang } = await browser.storage.local.get(['sourceLang', 'targetLang']);
-  const result = [];
 
   for (const segment of segments) {
     try {
@@ -15,21 +14,20 @@ async function translateSegments(segments) {
 
       if (response.error) throw new Error(response.error);
 
-      result.push({
+      const translated = {
         timestamp: segment.timestamp,
         original: segment.text,
         translated: response.translatedText || "[translation error]"
-      });
-      console.log(`[${segment.timestamp}] ${segment.text} → ${response.translatedText}`);
+      };
+
+      onSegmentTranslated(translated);
     } catch (e) {
-      result.push({
+      onSegmentTranslated({
         timestamp: segment.timestamp,
         original: segment.text,
         translated: "[translation error]"
       });
-      console.warn(`Translation failed for segment: ${segment.text}`, e.message, e);
+      console.warn(`Translation failed: ${segment.text}`, e.message);
     }
   }
-
-  return result;
 }
